@@ -2,15 +2,15 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: tempo-odf-ca
-  namespace: openshift-tempo
+  namespace: openshift-tracing
   annotations:
     service.beta.openshift.io/inject-cabundle: "true"
 ---
 apiVersion: tempo.grafana.com/v1alpha1
 kind:  TempoStack
 metadata:
-  name: simplest
-  namespace: openshift-tempo
+  name: platform
+  namespace: openshift-tracing
 spec:
   observability:
     metrics:
@@ -20,18 +20,18 @@ spec:
     global:
       traces: 20h
     perTenant:
-      dev:
+      platform:
         traces: 10h
   limits:
     perTenant:
-      dev:
+      platform:
         ingestion:
           ingestionBurstSizeBytes: 1000000
         query:
           maxSearchDuration: 1h
   storage:
     secret:
-      name: tempostack-dev-odf
+      name: tempostack-platform-odf
       type: s3
     tls:
       enabled: true
@@ -45,10 +45,8 @@ spec:
   tenants:
     mode: openshift
     authentication:
-      - tenantName: dev
+      - tenantName: platform
         tenantId: "1610b0c3-c509-4592-a256-a1871353dbfa"
-      - tenantName: prod
-        tenantId: "1610b0c3-c509-4592-a256-a1871353dbfb"
   template:
     gateway:
       enabled: true

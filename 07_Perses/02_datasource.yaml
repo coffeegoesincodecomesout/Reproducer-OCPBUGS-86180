@@ -2,7 +2,7 @@ apiVersion: perses.dev/v1alpha2
 kind: PersesGlobalDatasource
 metadata:
   name: tempo-platform
-  namespace: openshift-tempo
+  namespace: openshift-tracing
 spec:
   config:
     display:
@@ -14,7 +14,7 @@ spec:
         proxy:
           kind: HTTPProxy
           spec:
-            url: https://tempo-simplest-gateway.openshift-tempo.svc.cluster.local:8080/api/traces/v1/platform/tempo
+            url: https://tempo-platform-gateway.openshift-tracing.svc.cluster.local:8080/api/traces/v1/platform/tempo
             headers:
               X-Scope-OrgID: platform
             secret: tempo-platform-secret

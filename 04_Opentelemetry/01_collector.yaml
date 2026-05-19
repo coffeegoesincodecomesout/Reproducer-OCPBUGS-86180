@@ -36,25 +36,43 @@ spec:
       resourcedetection:
         detectors: [openshift]
         timeout: 2s
+      k8sattributes:
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.deployment.name
+        passthrough: false
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.name
+              - from: resource_attribute
+                name: k8s.namespace.name
+          - sources:
+              - from: connection
     exporters:
       otlp:
-        endpoint: tempo-simplest-gateway.openshift-tempo.svc.cluster.local:8090
+        endpoint: tempo-platform-gateway.openshift-tracing.svc.cluster.local:8090
         tls:
           insecure: false
           ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
         auth:
           authenticator: bearertokenauth
         headers:
-          X-Scope-OrgID: "dev"
+          X-Scope-OrgID: "platform"
       otlphttp:
-        endpoint: https://tempo-simplest-gateway.openshift-tempo.svc.cluster.local:8080/api/traces/v1/dev
+        endpoint: https://tempo-platform-gateway.openshift-tracing.svc.cluster.local:8080/api/traces/v1/platform
         tls:
           insecure: false
           ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
         auth:
           authenticator: bearertokenauth
         headers:
-          X-Scope-OrgID: "dev"
+          X-Scope-OrgID: "platform"
       debug:
         verbosity: detailed
     service:
@@ -67,9 +85,11 @@ spec:
       pipelines:
         traces/grpc:
           receivers: [otlp/grpc]
+          processors: [k8sattributes, batch, memory_limiter, resourcedetection]
           exporters: [otlp]
         traces/http:
           receivers: [otlp/http]
+          processors: [k8sattributes, batch, memory_limiter, resourcedetection]
           exporters: [otlphttp]
   managementState: managed
 ---
@@ -81,8 +101,7 @@ rules:
   - apiGroups:
       - 'tempo.grafana.com'
     resources:
-      - dev
-      - prod
+      - platform
     resourceNames:
       - traces
     verbs:
@@ -96,7 +115,7 @@ rules:
   - apiGroups:
       - 'tempo.grafana.com'
     resources:
-      - dev
+      - platform
     resourceNames:
       - traces
     verbs:
@@ -105,7 +124,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: tempostack-traces
+  name: tempostack-traces-write
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -114,3 +133,16 @@ subjects:
   - kind: ServiceAccount
     name: otel-collector-sidecar
     namespace: opentelemetry
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tempostack-traces-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tempostack-traces-reader
+subjects:
+  - kind: Group
+    name: system:cluster-admins
+    apiGroup: rbac.authorization.k8s.io

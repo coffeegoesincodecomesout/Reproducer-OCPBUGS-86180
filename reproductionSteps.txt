@@ -1,0 +1,60 @@
+## Reproduction steps
+
+1. Install COO with the `troubleshooting-panel` UIPlugin
+   (`UIPlugin/troubleshooting-panel`, `spec.type: TroubleshootingPanel`).
+2. Install Tempo Operator and the OpenTelemetry Operator
+3. Provision a TempoStack at the exact path Korrel8r expects:
+   ```yaml
+   apiVersion: tempo.grafana.com/v1alpha1
+   kind: TempoStack
+   metadata:
+     name: platform
+     namespace: openshift-tracing
+   spec:
+     storage:
+       secret: { name: <s3-secret>, type: s3 }
+     template:
+       gateway: { enabled: true }
+       queryFrontend:
+         jaegerQuery: { enabled: true }
+     tenants:
+       mode: openshift
+       authentication:
+         - tenantName: platform
+           tenantId: <UUID>
+   ```
+4. Bind a ClusterRole granting `create` on `tempo.grafana.com/platform/traces`
+   (resource `platform`, resourceName `traces`) to the OTel collector SA, and
+   another granting `get` to `system:cluster-admins`. (Mirrors LokiStack
+   `openshift-logging` RBAC.)
+5. Push spans through an OTel collector whose pipeline contains a
+   `k8sattributes` processor extracting at minimum `k8s.namespace.name`,
+   `k8s.pod.name`, `k8s.deployment.name`. Verify via Console **Observe →
+   Traces** that the spans land in TempoStack `openshift-tracing/platform`,
+   tenant `platform`, with these resource attributes present.
+6. Trigger a Korrel8r trace-store query:
+
+   ```bash
+   oc port-forward -n openshift-operators deploy/korrel8r 9443:9443 &
+   curl -sk -X POST https://localhost:9443/api/v1alpha1/objects \
+     -H 'Content-Type: application/json' \
+     -d '{"query":"trace:span:{resource.k8s.namespace.name=\"grafana\"}"}'
+   ```
+
+   Observe: `HTTP 404` with body `404 page not found`.
+
+7. Trigger a cross-domain graph query (Pod → trace):
+
+   ```bash
+   curl -sk -X POST https://localhost:9443/api/v1alpha1/graphs/goals \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "start": {"queries":["k8s:Pod:{namespace: grafana}"]},
+       "goals": ["trace:span"]
+     }'
+   ```
+
+   Observe: empty graph `{}` returned, even when matching spans exist in Tempo.
+
+8. Open any active alert in Console → Observe → Alerting → Troubleshooting
+   Panel — no "Related Traces" section appears.
