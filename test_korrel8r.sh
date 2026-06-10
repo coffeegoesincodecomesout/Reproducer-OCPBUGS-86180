@@ -49,8 +49,8 @@ else
     echo " done"
 
     echo ""
-    echo "Traces generated. Waiting 30 seconds for traces to be ingested into Tempo..."
-    sleep 30
+    echo "Traces generated. Waiting 60 seconds for traces to be ingested into Tempo..."
+    sleep 60
 fi
 
 echo ""
@@ -67,8 +67,13 @@ if [ -z "$TOKEN" ]; then
     exit 1
 fi
 
-# Set Tempo gateway URL
-TEMPO_GATEWAY="tempo-platform-gateway-openshift-tracing.apps.cluster-8gcj4.8gcj4.sandbox643.opentlc.com"
+# Get Tempo gateway URL dynamically from the cluster
+echo "Getting Tempo gateway URL from cluster..."
+TEMPO_GATEWAY=$(oc get route tempo-platform-gateway -n openshift-tracing -o jsonpath='{.spec.host}' 2>/dev/null)
+if [ -z "$TEMPO_GATEWAY" ]; then
+    echo "ERROR: Could not get Tempo gateway route. Please ensure Tempo is installed."
+    exit 1
+fi
 echo "Tempo gateway: https://${TEMPO_GATEWAY}"
 echo ""
 
@@ -140,7 +145,7 @@ echo ""
 if pgrep -f "port-forward.*korrel8r.*9443" > /dev/null; then
     echo "Port-forward to korrel8r is already running"
 else
-    echo "Starting port-forward to korrel8r..."
+    echo "Starting port-forward to korrel8r (HTTPS port 9443)..."
     oc port-forward -n openshift-operators deploy/korrel8r 9443:9443 &
     PORT_FORWARD_PID=$!
     echo "Port-forward started (PID: $PORT_FORWARD_PID)"
@@ -148,16 +153,22 @@ else
     sleep 5
 fi
 
+# Set verbose logging level to 4 as suggested by Alan Conway
+echo ""
+echo "Setting korrel8r verbose logging level to 4..."
+korrel8rcli config -u https://localhost:9443 --set-verbose 4
+echo ""
+
 echo ""
 echo "==================================================================="
-echo "Test 1: Direct trace-store query"
-echo "Expected: HTTP 404 with body '404 page not found'"
+echo "Test 1: Direct trace-store query (HTTPS)"
+echo "Expected: Empty result or error (trace-store domain issue)"
 echo "==================================================================="
 echo ""
 echo "Query: trace:span:{resource.k8s.namespace.name=\"grafana\"}"
 echo ""
 
-curl -sk -X POST https://localhost:9443/api/v1alpha1/objects \
+curl -v -k -X POST https://localhost:9443/api/v1alpha1/objects \
   -H 'Content-Type: application/json' \
   -d '{"query":"trace:span:{resource.k8s.namespace.name=\"grafana\"}"}'
 
@@ -165,14 +176,14 @@ echo ""
 echo ""
 
 echo "==================================================================="
-echo "Test 2: Cross-domain graph query (Pod → trace)"
+echo "Test 2: Cross-domain graph query (Pod → trace) (HTTPS)"
 echo "Expected: Empty graph '{}' returned, even when matching spans exist"
 echo "==================================================================="
 echo ""
 echo "Query: k8s:Pod:{namespace: grafana} → trace:span"
 echo ""
 
-curl -sk -X POST https://localhost:9443/api/v1alpha1/graphs/goals \
+curl -v -k -X POST https://localhost:9443/api/v1alpha1/graphs/goals \
   -H 'Content-Type: application/json' \
   -d '{
     "start": {"queries":["k8s:Pod:{namespace: grafana}"]},
@@ -184,14 +195,14 @@ echo ""
 
 # Alternative test with ns1-uwl namespace (the test app namespace in this repo)
 echo "==================================================================="
-echo "Test 3: Cross-domain graph query with test app namespace"
+echo "Test 3: Cross-domain graph query with test app namespace (HTTPS)"
 echo "Expected: Empty graph '{}' returned, even when matching spans exist"
 echo "==================================================================="
 echo ""
 echo "Query: k8s:Pod:{namespace: ns1-uwl} → trace:span"
 echo ""
 
-curl -sk -X POST https://localhost:9443/api/v1alpha1/graphs/goals \
+curl -v -k -X POST https://localhost:9443/api/v1alpha1/graphs/goals \
   -H 'Content-Type: application/json' \
   -d '{
     "start": {"queries":["k8s:Pod:{namespace: ns1-uwl}"]},
@@ -236,13 +247,25 @@ if [ "$KORREL8R_TRACE_COUNT" -gt 0 ]; then
     echo "  3. The issue is specific to korrel8r's trace-store domain configuration"
     echo ""
     echo "COMPARISON:"
-    echo "  ✗ Broken (404): POST https://localhost:9443/api/v1alpha1/objects"
-    echo "                  with query: 'trace:span:{...}'"
-    echo "  ✓ Working:      GET  https://${TEMPO_GATEWAY}/api/traces/v1/platform/tempo/api/search"
-    echo "                  with TraceQL query parameter"
+    echo "  ✗ Broken: POST https://localhost:9443/api/v1alpha1/objects"
+    echo "            with query: 'trace:span:{...}' (korrel8r API)"
+    echo "  ✓ Working: GET  https://${TEMPO_GATEWAY}/api/traces/v1/platform/tempo/api/search"
+    echo "             with TraceQL query parameter (direct Tempo API)"
 else
     echo "⚠ No traces found, but this could be due to timing or trace attributes"
 fi
+
+echo ""
+echo ""
+
+echo "==================================================================="
+echo "Collecting Korrel8r logs for debugging"
+echo "==================================================================="
+echo ""
+echo "Fetching recent korrel8r pod logs (last 100 lines)..."
+echo ""
+
+oc logs -n openshift-operators deploy/korrel8r --tail=100
 
 echo ""
 echo ""
@@ -259,16 +282,19 @@ echo "        - If traces were found, this confirms Tempo is working correctly"
 echo "Step 3: Tested Korrel8r's ability to query the same traces"
 echo ""
 echo "Expected behaviors in Step 3 (Korrel8r queries):"
-echo "  - Test 1: HTTP 404 error (direct trace-store query via korrel8r)"
+echo "  - Test 1: Empty result or error (direct trace-store query via korrel8r HTTPS)"
 echo "  - Test 2 & 3: Empty graph {}, no traces found despite traces existing in Tempo"
 echo "  - Test 4: SUCCESS when using correct Tempo URL format (bypassing korrel8r)"
 echo ""
 echo "This demonstrates the Korrel8r → Tempo integration issue where:"
 echo "  1. Tempo API directly returns traces ✓"
-echo "  2. Korrel8r direct trace queries fail with 404 ✗"
+echo "  2. Korrel8r direct trace queries fail (empty/error) ✗"
 echo "  3. Korrel8r cross-domain queries return empty results ✗"
 echo "  4. Direct Tempo queries work (correct URL format) ✓"
 echo "  5. Troubleshooting Panel shows no 'Related Traces' section ✗"
+echo ""
+echo "NOTE: Korrel8r acts as an intermediary. All requests to Korrel8r use:"
+echo "  POST https://localhost:9443/api/v1alpha1/objects"
 echo ""
 echo "The contrast between successful direct Tempo queries (Steps 2 & 4) and"
 echo "failed korrel8r queries (Tests 1-3) proves the issue is with Korrel8r's"
